@@ -698,6 +698,9 @@ function runSnapshot() {
   const cut = it => it ? { id: it.id, kind: it.kind, rar: it.rar, plus: it.plus } : null;
   return {
     z: S.z, z0: S.z0, wave: S.wave, next: S.phase === 'fight' ? S.stage : S.next,
+    // против абуза перезагрузкой: волна продолжается с оставшихся врагов, босс — с текущими ОЗ
+    left: S.phase === 'fight' && S.stage === 'mobs' ? S.spawnQ.length + S.enemies.filter(e => !e.dead && !e.boss && !e.summon).length : null,
+    bossHp: S.phase === 'fight' && S.stage === 'boss' && S.boss ? S.boss.hp / S.boss.maxHp : null,
     ore: S.ore, gold: S.gold, potions: S.potions, scrolls: S.scrolls, cart: S.cart, crafts: S.crafts, killed: S.killed,
     heat: S.heat, made: S.made, charges: S.charges, stash: S.stash.map(cut),
     heroes: S.heroes.map(h => ({ w: cut(h.w), a: cut(h.a), s: cut(h.s), hp: h.hp, alive: h.alive, ult: h.ult })),
@@ -758,12 +761,13 @@ function startRun(resume) {
     const R = resume;
     Object.assign(S, { z: R.z, z0: R.z0, wave: R.wave, next: R.next, stage: R.next, phase: 'walk', phaseT: 1.2,
       ore: R.ore, gold: R.gold, potions: R.potions, scrolls: R.scrolls, cart: R.cart, crafts: R.crafts, killed: R.killed,
-      heat: R.heat, made: R.made, charges: R.charges, stash: R.stash.filter(Boolean) });
+      heat: R.heat, made: R.made, charges: R.charges, stash: R.stash.filter(Boolean),
+      resumeLeft: R.left, resumeBossHp: R.bossHp });
     S.heroes.forEach((h, i) => {
       const r = R.heroes[i]; if (!r) return;
       h.w = r.w; h.a = r.a; h.s = r.s; h.ult = r.ult || 0;
       h.maxHp = h.base.hp + aHp(h.a) + sHp(h.s);
-      h.alive = true; h.hp = Math.max(1, Math.min(h.maxHp, r.alive ? r.hp : Math.round(h.maxHp * 0.4)));
+      h.alive = !!r.alive; h.hp = r.alive ? Math.max(1, Math.min(h.maxHp, r.hp)) : 0;   // павшие встают только после волны, как обычно
     });
   }
   buildHeroes(); renderStash(); updateUI(true);
@@ -796,6 +800,7 @@ function spawnMob(kind) {
 function spawnBoss() {
   const z = S.z, st = bossStats(z), b = BOSSES[z];
   const e = { kind: 'boss', boss: true, z, name: b.name, bio: biomeOf(z), hp: st.hp, maxHp: st.hp, atk: st.atk, cd: 1.6, speed: 9, w: 18, gold: 0, x: W + 14, cdT: 0.6, flash: 0, atkAnim: 0, moving: true, seed: 0, id: ++uid, tr: TRAITS[z] || [], teleT: BAL.teleEvery * 0.6, wind: 0, parried: false, sumT: BAL.summonEvery * 0.7 };
+  if (S.resumeBossHp != null) { e.hp = Math.max(1, Math.round(e.maxHp * S.resumeBossHp)); S.resumeBossHp = null; }
   S.enemies.push(e); S.boss = e; S.lastBoss = e;
   S.shake = 0.4; text(W - 48, 30, b.name + '!', '#ff5d6c', true);
 }
@@ -826,7 +831,7 @@ function bossTick(e, dt) {
       e.sumT = BAL.summonEvery;
       if (S.enemies.length < 5) {
         const pool = ZONES[Math.min(S.z, NZ - 1)][0];
-        for (let i = 0; i < 2; i++) { spawnMob(pool[i % pool.length]); const m = S.enemies[S.enemies.length - 1]; m.x = e.x - e.w / 2 - 5 - i * 4; m.gold = 0; }
+        for (let i = 0; i < 2; i++) { spawnMob(pool[i % pool.length]); const m = S.enemies[S.enemies.length - 1]; m.x = e.x - e.w / 2 - 5 - i * 4; m.gold = 0; m.summon = true; }
         text(e.x, GY - 50, 'СВИТА!', '#ffc16b', true);
       }
     }
@@ -930,6 +935,8 @@ function update(dt) {
     if (S.phaseT <= 0) {
       S.stage = S.next;
       S.spawnQ = S.stage === 'mobs' ? [...ZONES[S.z][S.wave]] : ['boss'];
+      if (S.stage === 'mobs' && S.resumeLeft != null) S.spawnQ = S.spawnQ.slice(S.spawnQ.length - Math.max(0, S.resumeLeft));
+      S.resumeLeft = null;
       S.spawnT = 0.2; S.phase = 'fight';
       S.heroes.forEach(h => h.moving = false);
     }
