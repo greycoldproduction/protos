@@ -39,6 +39,10 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
 .ic.ore{background:linear-gradient(135deg,#8a7a90 0 45%,#6a5a70 45%);border-radius:2px;box-shadow:inset 3px 3px 0 -1px var(--steel)}
 .ic.gold{background:radial-gradient(circle at 40% 38%,#ffe9a8 0 18%,#f2b53a 20% 62%,#b8791c 64%);border-radius:50%}
 .ic.emb{background:radial-gradient(circle at 50% 60%,#ffe08a 0 18%,#ff8a3d 22% 55%,#b8321c 60% 70%,transparent 72%);transform:rotate(45deg) scale(.95);border-radius:2px}
+.icon-btn{font-family:var(--f-pix);font-size:10px;color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 8px;line-height:1}
+.icon-btn:hover,.icon-btn:focus-visible{color:var(--fg);border-color:var(--ember)}
+.danger{width:100%;font-family:var(--f-pix);font-size:10px;background:var(--bad);color:var(--ink);padding:13px;border-radius:10px;box-shadow:0 4px 0 #8a2a35}
+.savenote{font-size:11px!important;color:var(--muted)!important}
 .mini-cta{font-family:var(--f-pix);font-size:8px;background:var(--ember);color:var(--ink);padding:8px 9px;border-radius:6px;box-shadow:0 3px 0 #a3471a}
 
 .arena-wrap{position:relative;flex:none}
@@ -221,12 +225,13 @@ img{max-width:100%}
 <body>
 <div id="game">
   <header class="top">
-    <div class="brand">КУЗНЯ<br>И АРЕНА</div>
+    <div class="brand" id="brand">КУЗНЯ<br>И АРЕНА</div>
     <div class="res">
       <span class="chip" id="oreChip"><i class="ic ore"></i><b id="ore">0</b></span>
       <span class="chip" id="goldChip"><i class="ic gold"></i><b id="gold">0</b></span>
       <span class="chip" id="embChip" hidden><i class="ic emb"></i><b id="emb">0</b></span>
     </div>
+    <button class="icon-btn" id="resetBtn" aria-label="Сбросить прогресс" title="Сбросить прогресс">↺</button>
     <button class="mini-cta" id="miniCta">ИГРАТЬ</button>
   </header>
 
@@ -285,7 +290,18 @@ img{max-width:100%}
       </div>
       <div class="ladder" id="ladder"></div>
       <p class="startnote" id="startNote"></p>
+      <p class="savenote" id="saveNote">Прогресс сохраняется автоматически</p>
       <button class="go" id="goBtn">В БОЙ · ЗАБЕГ 2</button>
+    </div>
+  </div>
+
+  <div class="overlay" id="resetDlg" hidden>
+    <div class="card">
+      <div class="kicker">СБРОС ПРОГРЕССА</div>
+      <h2>Начать с нуля?</h2>
+      <p>Кузня, угли, открытые механики и текущий забег обнулятся. Отменить это нельзя.</p>
+      <button class="danger" id="resetYes">СБРОСИТЬ</button>
+      <button class="again" id="resetNo">Отмена</button>
     </div>
   </div>
 
@@ -332,7 +348,8 @@ const BAL = {
   spawnGap: 1.0, waveGap: 0.9,
   // горн: переплавка без возврата руды, только жар. Каждые heatMax жара = 1 заряд закалки (ковка на цвет выше).
   // Зарядов не больше вместимости; в полный горн вещь сгорает впустую.
-  heatMax: 6, heatVal: [1, 1.5, 2, 2.5, 3], temperSteps: 2,
+  // жар монотонен по ступени: жар = heatBase + heatStep × ступень; цена заряда растёт внутри забега (инфляция) и сбрасывается на новом
+  heatMax: 6, heatBase: 1, heatStep: 0.5, chargeInfl: 1.25, temperSteps: 2,
   capBase: 1, capC: 30, capG: 1.8, capMax: 5,   // вместимость горна (мета): 1 заряд + 1 за уровень, до 6
   // горн-переработчик (мета): шанс выплавить зелье или свиток при переплавке
   hornC: 25, hornG: 1.65, hornChance: 0.035, hornMax: 0.3,  // шанс = 3.5% за уровень × (1 + 0.25·цвет), потолок 30%
@@ -348,8 +365,22 @@ const BAL = {
   ultCharge: 14, ultWar: 6, ultRog: 1.5, ultArc: 3,           // ульта: заряд за 14 с боя; воин 6×АТК и сбивает замах, разбойник 5 ударов ×1.5, лучник 3× по всем
   autoPotAt: 0.35,                                            // автозелье: если кто-то ниже 35% ОЗ (только из сумки)
   consMax: 3, potionCd: 3,                      // в сумке не больше 3 зелий и 3 свитков; зелье — раз в 3 с
-  burnVal: [1, 3, 8, 20, 50],
+  burnVal: [2, 4, 11, 26, 60], burnPlus: 0.25,              // костёр: burnVal[цвет] × (1 + burnPlus × плюс)
+  wavesPerZone: [3, 3, 3, 3, 3, 3, 3, 3],                  // волн рядовых мобов перед боссом в каждой зоне
 };
+// профили баланса: playtest — вся арка за ~40 мин для быстрых проверок; prod — растянутая кривая под реальную игру.
+// prod включается ссылкой с #prod или ?prod
+const PROFILES = {
+  playtest: {},
+  prod: {                                        // цель: асенд ≈ 72 мин бота (≈ 80 у человека), плотное начало
+    speed: 1.15,                                  // чуть медленнее
+    wavesPerZone: [4, 4, 4, 4, 4, 5, 5, 5],       // больше пространства между боссами, а не только толще стены
+    bossHp0: 1300, bossHpG: 1.76, finalHp: 0.55,
+    embG: 1.71,
+  },
+};
+const PROFILE = (typeof location !== 'undefined' && /(^|[?#&])prod\b/.test((location.search || '') + (location.hash || ''))) ? 'prod' : 'playtest';
+Object.assign(BAL, PROFILES[PROFILE]);
 const BIOMES = [
   { n: 'ПЕЩЕРЫ', bg: '#211827', brick: '#2a1f32', fire: '#ff8a3d', fire2: '#ffd27a', glow: 'rgba(255,138,61,.07)', slime: '#5fb85d', slimeHi: '#8fe08a', gob: '#7bb04a', orc: '#5f8f3f' },
   { n: 'ШАХТЫ', bg: '#1c1d27', brick: '#232634', fire: '#6fc3d6', fire2: '#d4f3fa', glow: 'rgba(111,195,214,.07)', slime: '#5a8fd0', slimeHi: '#8fb8ea', gob: '#8a9aa8', orc: '#6a7a88' },
@@ -392,8 +423,8 @@ const STASH_MAX = 8;
 function wavesFor(z) {
   const pool = z === 0 ? ['slime', 'slime', 'gob'] : z < 3 ? ['slime', 'gob', 'gob', 'orc'] : ['gob', 'orc', 'orc'];
   const waves = [];
-  for (let w = 0; w < 3; w++) {
-    const n = 3 + w, wave = [];
+  for (let w = 0; w < (BAL.wavesPerZone[z] || 3); w++) {
+    const n = 3 + Math.min(w, 2), wave = [];
     for (let i = 0; i < n; i++) wave.push(pool[(i * 7 + w * 3 + z) % pool.length]);
     waves.push(wave);
   }
@@ -457,6 +488,9 @@ const fromStep = st => ({ rar: Math.floor(st / STEPS()), plus: st % STEPS() });
 // пол ковки растёт с кузней, но не выше верхнего открытого цвета (+max)
 const floorStep = F => Math.min(Math.floor(F * BAL.floorPerLvl), toStep(topTier(F), BAL.plusMax));
 const stepName = st => { const f = fromStep(st); return RAR[f.rar].s + (f.plus ? ' +' + f.plus : ''); };
+const heatOf = it => BAL.heatBase + BAL.heatStep * toStep(it.rar, it.plus);
+const chargeCost = () => BAL.heatMax * Math.pow(BAL.chargeInfl, S.made || 0);
+const fmt1 = v => (Math.round(v * 10) / 10).toString();
 const startZone = () => Math.max(0, Math.min(NZ - 1, M.best) - BAL.back);
 
 /* ================= СПРАЙТЫ ================= */
@@ -652,11 +686,62 @@ function iconCart(c) {
 }
 
 /* ================= СОСТОЯНИЕ ================= */
+/* ================= СОХРАНЕНИЕ ================= */
+// Один активный слот в localStorage, отдельный на каждый профиль. Сохраняемся в спокойных точках:
+// начало забега, переход между волнами, смерть, покупки, уход со страницы. Забег восстанавливается с начала текущей волны.
+const SAVE_KEY = 'forge-arena:save:v1:' + PROFILE;
+const SAVE_V = 1;
+let saveOff = false;                                    // на время сброса и в финале
+function store() { try { return window.localStorage || null; } catch (e) { return null; } }
+function runSnapshot() {
+  if (!S || S.phase === 'idle' || S.phase === 'dead' || S.phase === 'win') return null;
+  const cut = it => it ? { id: it.id, kind: it.kind, rar: it.rar, plus: it.plus } : null;
+  return {
+    z: S.z, z0: S.z0, wave: S.wave, next: S.phase === 'fight' ? S.stage : S.next,
+    ore: S.ore, gold: S.gold, potions: S.potions, scrolls: S.scrolls, cart: S.cart, crafts: S.crafts, killed: S.killed,
+    heat: S.heat, made: S.made, charges: S.charges, stash: S.stash.map(cut),
+    heroes: S.heroes.map(h => ({ w: cut(h.w), a: cut(h.a), s: cut(h.s), hp: h.hp, alive: h.alive, ult: h.ult })),
+  };
+}
+function saveGame() {
+  if (saveOff || !M) return;
+  const ls = store(); if (!ls) return;
+  try { ls.setItem(SAVE_KEY, JSON.stringify({ v: SAVE_V, t: Date.now(), M, R: runSnapshot(), lg: lastGain })); } catch (e) {}
+}
+function clearSave() { const ls = store(); if (ls) try { ls.removeItem(SAVE_KEY); } catch (e) {} }
+function loadGame() {
+  const ls = store(); if (!ls) return false;
+  let d = null;
+  try { d = JSON.parse(ls.getItem(SAVE_KEY) || 'null'); } catch (e) { d = null; }
+  if (!d || d.v !== SAVE_V || !d.M) return false;
+  S = null; M = Object.assign(newMeta(), d.M);
+  const ids = [];
+  if (d.R) {
+    startRun(d.R);
+    for (const it of d.R.stash) if (it) ids.push(it.id);
+    for (const h of d.R.heroes) for (const it of [h.w, h.a, h.s]) if (it) ids.push(it.id);
+  } else {
+    // сохранились на экране престижа: показываем его снова, угли уже начислены
+    M.run--; startRun(); S.phase = 'idle';
+    lastGain = d.lg || { gain: 0, burn: 0, base: 0, bossFrac: 0, bossName: null, zone: S.z + 1 };
+    showPrestige();
+  }
+  uid = Math.max(uid, ...ids, 0) + 1;
+  return true;
+}
+function askReset() { $('#resetDlg').hidden = false; }
+function doReset() {
+  saveOff = true; clearSave();
+  $('#resetDlg').hidden = true;
+  lastGain = null; newGame();
+  saveOff = false; saveGame();
+}
 function newMeta() {
   return { run: 0, embers: 0, earned: 0, F: 0, C: 0, best: 0, done: {}, slowUsed: {}, firstCraft: true, crafted: 0, used: 0, melted: 0, burned: 0, merged: 0, ff: false, t0: 0, H: 0, A: 0, K: 0, found: 0, wasted: 0, seen: {} };
 }
-function startRun() {
-  M.run++;
+function startRun(resume) {
+  if (resume && !Array.isArray(resume.heroes)) resume = null;   // клик по кнопке передаёт событие, а не сейв
+  if (!resume) M.run++;
   for (const k in UPGATES) if (isOpen(k)) M.seen[k] = true;
   const z0 = startZone();
   const curZ = S ? S.z : 0;
@@ -664,16 +749,30 @@ function startRun() {
     t: 0, ore: z0 * BAL.skipOre, gold: z0 * BAL.skipGold, potions: 1, scrolls: 1, cart: M.C >= 1, mineAcc: 0,
     heroes: HD.map(d => ({ ...d, base: d, maxHp: d.hp, hp: d.hp, w: null, a: null, s: null, ult: 0, alive: true, cdT: Math.random() * 0.5, atkAnim: 0, flash: 0, moving: true })),
     enemies: [], arrows: [], fx: [], texts: [], stash: [],
-    z: z0, z0, wave: 0, heat: 0, charges: M.carry || 0, stage: 'mobs', next: 'mobs', phase: 'walk', phaseT: 1.8, spawnQ: [], spawnT: 0,
+    z: z0, z0, wave: 0, heat: 0, made: 0, charges: M.carry || 0, stage: 'mobs', next: 'mobs', phase: 'walk', phaseT: 1.8, spawnQ: [], spawnT: 0,
     scroll: 0, shake: 0, fireFlash: 0, potCd: 0, nugget: 0, nugT: 6, autoT: 0, crafts: 0, killed: 0, endT: 0, sel: null, boss: null, lastBoss: null,
     lastInput: S ? S.lastInput : -10, rt: S ? S.rt : 0, slow: 0,
   };
   $('#prestige').hidden = true; $('#end').hidden = true;
+  if (resume) {
+    const R = resume;
+    Object.assign(S, { z: R.z, z0: R.z0, wave: R.wave, next: R.next, stage: R.next, phase: 'walk', phaseT: 1.2,
+      ore: R.ore, gold: R.gold, potions: R.potions, scrolls: R.scrolls, cart: R.cart, crafts: R.crafts, killed: R.killed,
+      heat: R.heat, made: R.made, charges: R.charges, stash: R.stash.filter(Boolean) });
+    S.heroes.forEach((h, i) => {
+      const r = R.heroes[i]; if (!r) return;
+      h.w = r.w; h.a = r.a; h.s = r.s; h.ult = r.ult || 0;
+      h.maxHp = h.base.hp + aHp(h.a) + sHp(h.s);
+      h.alive = true; h.hp = Math.max(1, Math.min(h.maxHp, r.alive ? r.hp : Math.round(h.maxHp * 0.4)));
+    });
+  }
   buildHeroes(); renderStash(); updateUI(true);
+  if (resume) { text(100, 30, 'ПРОДОЛЖАЕМ · ЗОНА ' + (S.z + 1), '#7bd88f', true); return; }
+  saveGame();
   text(100, 30, 'ЗОНА ' + (z0 + 1) + ' · ' + biomeOf(z0).n, '#ffc16b', true);
   if (M.run > 1 && z0 > 0) text(100, 42, '+' + S.ore + ' РУДЫ ЗА ПРОПУСК', '#6fc3d6', false);
 }
-function newGame() { S = null; M = newMeta(); startRun(); }
+function newGame() { S = null; M = newMeta(); lastGain = null; startRun(); }
 
 const atkOf = h => h.atk + wAtk(h.w);
 const defOf = h => h.def + aDef(h.a) + sDef(h.s);
@@ -854,6 +953,7 @@ function update(dt) {
       else if (S.wave + 1 < ZONES[S.z].length) { S.wave++; S.next = 'mobs'; S.phaseT = BAL.waveGap; }
       else { S.next = 'boss'; S.phaseT = 1.4; text(100, 40, 'ВПЕРЕДИ БОСС', '#ffc16b', true); }
       S.phase = 'walk';
+      saveGame();
     }
   }
 
@@ -1018,10 +1118,10 @@ function meltItem(it, auto) {
   const cap = capOf();
   if (S.charges >= cap) { M.wasted++; floatAt('#furnace', 'ВПУСТУЮ'); }
   else {
-    const add = BAL.heatVal[it.rar] * (1 + it.plus);
+    const add = heatOf(it);
     S.heat += add;
-    floatAt('#furnace', '+' + add + ' ЖАР');
-    while (S.heat >= BAL.heatMax && S.charges < cap) { S.heat -= BAL.heatMax; S.charges++; floatAt('#furnace', 'ЗАРЯД!'); }
+    floatAt('#furnace', '+' + fmt1(add) + ' ЖАР');
+    while (S.charges < cap && S.heat >= chargeCost()) { S.heat -= chargeCost(); S.charges++; S.made = (S.made || 0) + 1; floatAt('#furnace', 'ЗАРЯД!'); }
     if (S.charges >= cap) { if (S.heat > 0) M.heatLost = (M.heatLost || 0) + S.heat; S.heat = 0; }
   }
   if (M.H > 0 && Math.random() < hornChance(M.H, it.rar)) {
@@ -1079,13 +1179,15 @@ function onDeath() {
   const base = Math.round(BAL.emb0 * Math.pow(BAL.embG, S.z) * (1 + bossFrac));
   let burn = 0;
   let burnHeat = 0;
-  for (const h of S.heroes) for (const it of [h.w, h.a, h.s]) if (it) { burn += BAL.burnVal[it.rar] * (1 + it.plus); burnHeat += BAL.heatVal[it.rar] * (1 + it.plus); }
+  for (const h of S.heroes) for (const it of [h.w, h.a, h.s]) if (it) { burn += BAL.burnVal[it.rar] * (1 + BAL.burnPlus * it.plus); burnHeat += heatOf(it); }
   // костёр раскаляет горн: сгоревший шмот и остаток жара дают заряды на старт следующего забега (не больше вместимости)
   M.carry = unl('furnace') ? Math.min(capOf(), S.charges + Math.floor((S.heat + burnHeat) / BAL.heatMax)) : 0;
+  burn = Math.round(burn);
   const gain = base + burn;
   M.burned += burn; M.embers += gain; M.earned += gain;
   lastGain = { gain, burn, base, bossFrac, bossName: atBoss ? S.lastBoss.name : null, zone: S.z + 1 };
   showPrestige();
+  saveGame();
 }
 function showPrestige() {
   const g = lastGain;
@@ -1164,27 +1266,27 @@ function gateCard(k, sel, tSel, dSel, title, teaser) {
 }
 function buyForge() {
   const c = forgeCost(M.F); if (M.embers < c) return;
-  M.embers -= c; M.F++; M.done.upForge = true; renderPrestige();
+  M.embers -= c; M.F++; M.done.upForge = true; renderPrestige(); saveGame();
   burstCard('#upForge');
 }
 function buyCartUp() {
   const c = cartCost(M.C); if (M.embers < c) return;
-  M.embers -= c; M.C++; M.done.upCart = true; renderPrestige();
+  M.embers -= c; M.C++; M.done.upCart = true; renderPrestige(); saveGame();
   burstCard('#upCart');
 }
 function buyAlch() {
   const c = alchCost(M.A); if (!isOpen('alch') || M.embers < c) return;
-  M.embers -= c; M.A++; renderPrestige();
+  M.embers -= c; M.A++; renderPrestige(); saveGame();
   burstCard('#upAlch');
 }
 function buyCap() {
   const c = capCost(M.K); if (!isOpen('cap') || M.K >= BAL.capMax || M.embers < c) return;
-  M.embers -= c; M.K++; renderPrestige();
+  M.embers -= c; M.K++; renderPrestige(); saveGame();
   burstCard('#upCap');
 }
 function buyHorn() {
   const c = hornCost(M.H); if (!isOpen('horn') || M.embers < c) return;
-  M.embers -= c; M.H++; renderPrestige();
+  M.embers -= c; M.H++; renderPrestige(); saveGame();
   burstCard('#upHorn');
 }
 function burstCard(sel) { const e = $(sel); e.animate?.([{ transform: 'scale(1.04)' }, { transform: 'scale(1)' }], { duration: 220 }); }
@@ -1332,7 +1434,7 @@ function updateUI(force) {
   const zw = ZONES[Math.min(S.z, NZ - 1)].length;
   const zl = `ЗОНА ${Math.min(S.z + 1, NZ)}/${NZ}`;
   const stageTxt = (S.stage === 'boss' && S.phase === 'fight') || (S.next === 'boss' && S.phase === 'walk') ? `${zl} · БОСС` : `${zl} · ВОЛНА ${Math.min(S.wave + 1, zw)}/${zw}`;
-  setHTML('#wave', `ЗАБЕГ ${M.run} · ${stageTxt}` + (isFast() ? ` · <em>×${BAL.fast}</em>` : ''));
+  setHTML('#wave', (PROFILE !== 'playtest' ? '<em>' + PROFILE.toUpperCase() + '</em> · ' : '') + `ЗАБЕГ ${M.run} · ${stageTxt}` + (isFast() ? ` · <em>×${BAL.fast}</em>` : ''));
   const bb = $('#bossbar');
   bb.hidden = !S.boss;
   if (S.boss) { setHTML('#bossName', S.boss.name + (S.boss.tr.length ? ' <em>· ' + S.boss.tr.map(t => TNAMES[t]).join(' · ') + '</em>' : '')); $('#bossHp').style.width = (100 * S.boss.hp / S.boss.maxHp).toFixed(1) + '%'; }
@@ -1365,11 +1467,11 @@ function updateUI(force) {
   const tt = topTier(M.F);
   const fl = fromStep(floorStep(M.F));
   setHTML('#forgeLvl', `ур. ${M.F} · пол <span style="color:${RAR[fl.rar].c}">${stepName(floorStep(M.F))}</span>`);
-  $('#heatFill').style.width = (S.charges >= capOf() ? 100 : 100 * S.heat / BAL.heatMax) + '%';
+  $('#heatFill').style.width = (S.charges >= capOf() ? 100 : Math.min(100, 100 * S.heat / chargeCost())) + '%';
   setCls($('#furnace'), 'ready', S.charges > 0);
   setCls($('#furnace'), 'full', S.charges >= capOf());
   setCls($('#furnace'), 'pick', !!S.sel);
-  setText('#heatTxt', !unl('furnace') ? (unl('autoEquip') ? 'автоодевание' : '') : unl('autoEquip') && !S.charges && !S.heat ? 'автоодевание' : S.charges >= capOf() ? 'горн полон' : (S.charges ? `${S.charges} ковк. на цвет выше` : (S.heat ? `жар ${S.heat}/${BAL.heatMax}` : '')));
+  setText('#heatTxt', !unl('furnace') ? (unl('autoEquip') ? 'автоодевание' : '') : unl('autoEquip') && !S.charges && !S.heat ? 'автоодевание' : S.charges >= capOf() ? 'горн полон' : (S.charges ? `${S.charges} ковк. на +${BAL.temperSteps}` : (S.heat ? `жар ${fmt1(S.heat)}/${fmt1(chargeCost())}` : '')));
   const cost = craftCost(S.crafts);
   setText('#costW', '' + cost); setText('#costA', '' + cost); setText('#costS', '' + cost);
   $('#craftA').hidden = !unl('armor'); $('#craftS').hidden = !unl('shield');
@@ -1447,6 +1549,7 @@ function idleToast() {
   return 'Герои дерутся сами. Помогай расходниками';
 }
 function updateHint(rdt) {
+  if (!$('#resetDlg').hidden) { hand.hidden = true; return; }
   const tutorial = M.run === 1;
   if (S.phase === 'win' || S.phase === 'dead' || !$('#end').hidden) { hand.hidden = true; toast.hidden = !tutorial; return; }
   // подсказки к новым механикам живут и после обучения, пока механику не попробовали
@@ -1537,6 +1640,7 @@ function render() {
 /* ================= ФИНАЛ ================= */
 function showEnd(win) {
   S.phase = 'idle';
+  if (win) clearSave();
   $('#prestige').hidden = true;
   const mins = Math.round(S.rt / 60);
   $('#endKicker').textContent = 'ДЕМОН ПОВЕРЖЕН';
@@ -1575,7 +1679,12 @@ $('#goBtn').addEventListener('click', startRun);
 $('#ffBtn').addEventListener('click', () => { M.ff = !M.ff; });
 $('#ctaBtn').addEventListener('click', cta);
 $('#miniCta').addEventListener('click', cta);
-$('#againBtn').addEventListener('click', newGame);
+$('#againBtn').addEventListener('click', () => { clearSave(); newGame(); });
+$('#resetBtn').addEventListener('click', askReset);
+$('#resetYes').addEventListener('click', doReset);
+$('#resetNo').addEventListener('click', () => { $('#resetDlg').hidden = true; });
+window.addEventListener('pagehide', saveGame);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveGame(); });
 window.addEventListener('resize', resize);
 
 iconPotion($('#icPotion').getContext('2d'));
@@ -1591,9 +1700,10 @@ iconFurnace($('#icUpCap').getContext('2d'));
 iconPotion($('#icUpAlch').getContext('2d'));
 
 // хук для автотестов баланса
-window.__forge = { get S() { return S; }, get M() { return M; }, BAL, unl, useUlt, slotOf, BOSSES, NZ, update, craft, equip, melt, merge, canMerge, twins, itemPow, usePotion, useScroll, mineTap, buyCart, buyForge, buyCartUp, buyHorn, hornCost, buyCap, capCost, buyAlch, alchCost, startRun, forgeCost, cartCost, craftCost, priceOf };
+window.__forge = { get S() { return S; }, get M() { return M; }, saveGame, loadGame, clearSave, SAVE_KEY, BAL, PROFILE, PROFILES, RAR, HD, ED, ZONES, TRAITS, TNAMES, UNAMES, BIOMES, PRICE, STASH_MAX, unl, useUlt, slotOf, BOSSES, NZ, update, craft, equip, melt, merge, canMerge, twins, itemPow, usePotion, useScroll, mineTap, buyCart, buyForge, buyCartUp, buyHorn, hornCost, buyCap, capCost, buyAlch, alchCost, startRun, forgeCost, cartCost, craftCost, priceOf };
 
-newGame();
+if (PROFILE !== 'playtest') { $('#brand').innerHTML = 'КУЗНЯ И АРЕНА<br>' + PROFILE.toUpperCase(); document.title += ' · ' + PROFILE; }
+if (!loadGame()) newGame();
 resize();
 let last = performance.now();
 function loop(now) {
@@ -1601,7 +1711,7 @@ function loop(now) {
   S.rt += rdt;
   if (S.slow > 0) S.slow -= rdt;
   const ts = BAL.speed * (S.slow > 0 ? 0.3 : (isFast() ? BAL.fast : 1));
-  update(rdt * ts);
+  if ($('#resetDlg').hidden) update(rdt * ts);           // диалог сброса ставит игру на паузу
   updateHint(rdt);
   updateUI(false);
   render();
